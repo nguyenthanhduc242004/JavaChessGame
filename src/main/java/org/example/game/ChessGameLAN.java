@@ -4,7 +4,10 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.*;
 import java.util.ArrayList;
 import java.util.Enumeration;
@@ -24,7 +27,7 @@ public class ChessGameLAN extends JFrame {
 
     public ChessGameLAN() {
         setTitle("LAN Chess Game - " + getCurrentDate()); // Added date to title
-        setSize(700, 500); // Increased size slightly
+        setSize(700, 500);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
@@ -144,7 +147,6 @@ public class ChessGameLAN extends JFrame {
             serverThread.start();
 
             updateMenuStates(); // Server is attempting to start
-
         } catch (NumberFormatException ex) {
             JOptionPane.showMessageDialog(this, "Invalid port number. Please enter a numeric value.", "Input Error", JOptionPane.ERROR_MESSAGE);
             logMessage("Error hosting game: Invalid port format '" + portStr + "'.");
@@ -186,7 +188,7 @@ public class ChessGameLAN extends JFrame {
                 }
 
                 logMessage("Attempting to connect to server at " + ipAddress + ":" + port + "...");
-                chessClient = new ChessClient(ipAddress, port, this::logMessage, this::onClientDisconnected); // Pass logger & disconnect callback
+                chessClient = new ChessClient(ipAddress, port, this::logMessage, this::onClientDisconnected, false); // Pass logger & disconnect callback
                 Thread clientThread = new Thread(chessClient::connect);
                 clientThread.setName("ChessClientThread");
                 clientThread.setDaemon(true);
@@ -285,34 +287,40 @@ interface ClientDisconnectCallback {
 class ChessServer {
     private final int port;
     private ServerSocket serverSocket;
-    private Socket clientSocket; // Single client
+    private Socket clientSocket;
     private volatile boolean running = false; // Ensure visibility across threads
     private final LoggerCallback logger;
     private final ServerStopCallback stopCallback;
     private Thread communicationThread;
+    private boolean isWhite;
+    private boolean isWhiteTurn = true;
+    private ChessGameGUI chessGameGUI;
 
 
     public ChessServer(int port, LoggerCallback logger, ServerStopCallback stopCallback) {
         this.port = port;
         this.logger = logger;
         this.stopCallback = stopCallback;
+        this.isWhite = true;
     }
 
     public void startServer() {
         try {
             serverSocket = new ServerSocket(port);
+
             // Successfully bound the port, now set running to true
             // This needs to be set before accept() so isRunning() is accurate
             // But if accept fails, it needs to be reset.
             // Let's set running true *after* successful accept,
             // or handle BindException specifically before that.
-            logger.log("Server socket created. Listening on port: " + port + " for a single client...");
+            logger.log("Server socket created. Listening on port: " + port + " for another player...");
             running = true; // Server is now officially attempting to run
             // Crucially, update GUI state *before* blocking on accept()
             // This is handled by the caller (ChessGameLAN) updating menus after starting the thread.
 
-            clientSocket = serverSocket.accept(); // Blocks until one client connects
-            // Only one client is accepted. Close server socket to prevent more.
+            Socket clientSocket = serverSocket.accept();
+
+            // Only 1 client is accepted. Close server socket to prevent more.
             if (serverSocket != null && !serverSocket.isClosed()) {
                 try {
                     serverSocket.close(); // No more new connections
@@ -325,13 +333,21 @@ class ChessServer {
             logger.log("Client connected: " + clientSocket.getInetAddress().getHostAddress() + ". Ready for game.");
             // Server is running and has a client.
 
-            // Communication loop with the single client
+            ObjectOutputStream out = new ObjectOutputStream(clientSocket.getOutputStream());
+            ObjectInputStream in = new ObjectInputStream(clientSocket.getInputStream());
+
+            chessGameGUI = new ChessGameGUI(true, out, in);
+
+            // Communication loop with the clients
             communicationThread = Thread.currentThread(); // Store for potential interrupt
             while (running && clientSocket != null && !clientSocket.isClosed() && !Thread.currentThread().isInterrupted()) {
                 try {
-                    // TODO: Implement actual game data exchange here
-                    // Example: Read move object, process, send response
-                    // For this placeholder, we'll check if client is still there.
+                    Object obj = in.readObject();
+                    if (obj instanceof Move move) {
+                        logger.log("Received move from client: " + move);
+                        chessGameGUI.makeMove(move, false);
+                    }
+
                     if (clientSocket.getInputStream().read() == -1) {
                         logger.log("Client disconnected (EOF reached).");
                         break; // Client closed connection
@@ -348,6 +364,8 @@ class ChessServer {
                     logger.log("Server communication thread interrupted.");
                     Thread.currentThread().interrupt(); // Preserve interrupt status
                     break;
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException(e);
                 }
             }
 
@@ -436,53 +454,82 @@ class ChessClient {
     private final LoggerCallback logger;
     private final ClientDisconnectCallback disconnectCallback;
     private Thread communicationThread;
+    private boolean isWhite;
+    private ChessGameGUI chessGameGUI;
+    private boolean isWhiteTurn = false;
 
-    public ChessClient(String serverIp, int serverPort, LoggerCallback logger, ClientDisconnectCallback dcCallback) {
+    public ChessClient(String serverIp, int serverPort, LoggerCallback logger, ClientDisconnectCallback dcCallback, boolean isWhite) {
         this.serverIp = serverIp;
         this.serverPort = serverPort;
         this.logger = logger;
         this.disconnectCallback = dcCallback;
+        this.isWhite = isWhite;
     }
 
     public void connect() {
         communicationThread = Thread.currentThread();
         try {
             socket = new Socket();
-            logger.log("Client attempting to connect to " + serverIp + ":" + serverPort + " (timeout 5s)...");
+            if (logger != null)
+                logger.log("Client attempting to connect to " + serverIp + ":" + serverPort + " (timeout 5s)...");
             socket.connect(new InetSocketAddress(serverIp, serverPort), 5000); // 5 seconds timeout
             connected = true;
-            logger.log("CLIENT: Successfully connected to server: " + serverIp + ":" + serverPort);
+            if (logger != null)
+                logger.log("CLIENT: Successfully connected to server: " + serverIp + ":" + serverPort);
+
+            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+            ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+
+            chessGameGUI = new ChessGameGUI(false, out, in);
 
             // TODO: Implement actual game data exchange here
             while (connected && socket != null && !socket.isClosed() && !Thread.currentThread().isInterrupted()) {
                 try {
-                    // Example: Read move object, process, send response
+                    Object obj = in.readObject();
+                    if (obj instanceof Move move) {
+                        if (logger != null)
+                            logger.log("Received move from server: " + move);
+                        chessGameGUI.makeMove(move, false);
+                    }
+
                     if (socket.getInputStream().read() == -1) { // Check for server disconnect
-                        logger.log("CLIENT: Server disconnected (EOF reached).");
+                        if (logger != null)
+                            logger.log("CLIENT: Server disconnected (EOF reached).");
                         break;
                     }
                     Thread.sleep(200); // Simulate activity or keep-alive check
                 } catch (SocketException se) {
-                    if(connected) logger.log("CLIENT: Connection issue: " + se.getMessage() + ". Assuming server disconnected.");
+                    if(connected)
+                        if (logger != null)
+                            logger.log("CLIENT: Connection issue: " + se.getMessage() + ". Assuming server disconnected.");
                     break;
                 } catch (IOException e) {
-                    if(connected) logger.log("CLIENT: IO Error: " + e.getMessage());
+                    if(connected)
+                        if (logger != null)
+                            logger.log("CLIENT: IO Error: " + e.getMessage());
                     break;
                 } catch (InterruptedException e) {
-                    logger.log("CLIENT: Communication thread interrupted.");
+                    if (logger != null)
+                        logger.log("CLIENT: Communication thread interrupted.");
                     Thread.currentThread().interrupt(); // Preserve interrupt status
                     break;
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException(e);
                 }
             }
         } catch (SocketTimeoutException ste) {
-            logger.log("CLIENT: Connection timed out. Server not responding at " + serverIp + ":" + serverPort);
+            if (logger != null)
+                logger.log("CLIENT: Connection timed out. Server not responding at " + serverIp + ":" + serverPort);
         } catch (ConnectException ce) {
-            logger.log("CLIENT: Connection refused at " + serverIp + ":" + serverPort + ". Is the server running and port correct? " + ce.getMessage());
+            if (logger != null)
+                logger.log("CLIENT: Connection refused at " + serverIp + ":" + serverPort + ". Is the server running and port correct? " + ce.getMessage());
         } catch (UnknownHostException uhe) {
-            logger.log("CLIENT: Unknown host: " + serverIp + ". Check the IP address. " + uhe.getMessage());
+            if (logger != null)
+                logger.log("CLIENT: Unknown host: " + serverIp + ". Check the IP address. " + uhe.getMessage());
         }
         catch (IOException e) {
-            logger.log("CLIENT: Could not connect to server " + serverIp + ":" + serverPort + ". " + e.getMessage());
+            if (logger != null)
+                logger.log("CLIENT: Could not connect to server " + serverIp + ":" + serverPort + ". " + e.getMessage());
         } finally {
             cleanUpConnection();
             if (disconnectCallback != null) {
@@ -496,17 +543,21 @@ class ChessClient {
         try {
             if (socket != null && !socket.isClosed()) {
                 socket.close();
-                logger.log("CLIENT: Socket closed.");
+                if (logger != null)
+                    logger.log("CLIENT: Socket closed.");
             }
         } catch (IOException e) {
-            logger.log("CLIENT: Error closing client socket: " + e.getMessage());
+            if (logger != null)
+                logger.log("CLIENT: Error closing client socket: " + e.getMessage());
         }
-        logger.log("CLIENT: Connection attempt/session finished.");
+        if (logger != null)
+            logger.log("CLIENT: Connection attempt/session finished.");
     }
 
 
     public void disconnect() {
-        logger.log("CLIENT: Disconnect requested by user/app.");
+        if (logger != null)
+            logger.log("CLIENT: Disconnect requested by user/app.");
         connected = false; // Signal the loop to stop
         if (communicationThread != null && communicationThread.isAlive()) {
             communicationThread.interrupt(); // Interrupt if stuck

@@ -1,14 +1,22 @@
 package org.example.game;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.List;
 import java.util.ArrayList;
 
 public class ChessGame {
     private ChessBoard board;
-    private boolean whiteTurn = true; // White starts the game
+    private boolean isWhite;
+    private ObjectOutputStream out;
+    private ObjectInputStream in;
 
-    public ChessGame() {
-        this.board = new ChessBoard();
+    public ChessGame(boolean isWhite, ObjectOutputStream out, ObjectInputStream in) {
+        this.isWhite = isWhite;
+        this.board = new ChessBoard(isWhite);
+        this.out = out;
+        this.in = in;
     }
 
     public ChessBoard getBoard() {
@@ -16,12 +24,12 @@ public class ChessGame {
     }
 
     public void resetGame() {
-        this.board = new ChessBoard();
-        this.whiteTurn = true;
+        this.board = new ChessBoard(isWhite);
+//        this.isWhite = true;
     }
 
-    public PieceColor getCurrentPlayerColor() {
-        return whiteTurn ? PieceColor.WHITE : PieceColor.BLACK;
+    public PieceColor getPlayerColor() {
+        return isWhite ? PieceColor.WHITE : PieceColor.BLACK;
     }
 
     private Position selectedPosition;
@@ -30,31 +38,34 @@ public class ChessGame {
         return selectedPosition != null;
     }
 
-    public boolean handleSquareSelection(int row, int col) {
+    public boolean handleSquareSelection(int row, int col) throws IOException {
         if (selectedPosition == null) {
             Piece selectedPiece = board.getPiece(row, col);
             if (selectedPiece != null
-                    && selectedPiece.getColor() == (whiteTurn ? PieceColor.WHITE : PieceColor.BLACK)) {
+                    && selectedPiece.getColor() == getPlayerColor()) {
                 selectedPosition = new Position(row, col);
                 return false;
             }
         } else {
-            boolean moveMade = makeMove(selectedPosition, new Position(row, col));
+            boolean moveMade = makeMove(new Move(selectedPosition, new Position(row, col)), true);
             selectedPosition = null;
             return moveMade;
         }
         return false;
     }
 
-    public boolean makeMove(Position start, Position end) {
-        Piece movingPiece = board.getPiece(start.getRow(), start.getColumn());
-        if (movingPiece == null || movingPiece.getColor() != (whiteTurn ? PieceColor.WHITE : PieceColor.BLACK)) {
+    public boolean makeMove(Move move, boolean isYourTurn) throws IOException {
+        Piece movingPiece = board.getPiece(move.from.getRow(), move.from.getColumn());
+        if (movingPiece == null) {
             return false;
         }
 
-        if (movingPiece.isValidMove(end, board.getBoard())) {
-            board.movePiece(start, end);
-            whiteTurn = !whiteTurn;
+        if (movingPiece.isValidMove(move.to, board.getBoard())) {
+            board.movePiece(move);
+            if (isYourTurn) {
+                out.writeObject(move);
+                out.flush();
+            }
             return true;
         }
         return false;

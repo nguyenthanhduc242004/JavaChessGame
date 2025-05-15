@@ -4,13 +4,15 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.*;
+import java.io.ObjectInputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 
 public class ChessGameGUI extends JFrame {
     private final ChessSquareComponent[][] squares = new ChessSquareComponent[8][8];
-    private final ChessGame game = new ChessGame();
+    private final ChessGame game;
 
     private final Map<Class<? extends Piece>, String> pieceUnicodeMap = new HashMap<>() {
         {
@@ -23,7 +25,8 @@ public class ChessGameGUI extends JFrame {
         }
     };
 
-    public ChessGameGUI() {
+    public ChessGameGUI(boolean isWhite, ObjectOutputStream out, ObjectInputStream in) {
+        game = new ChessGame(isWhite, out, in);
         setTitle("Chess Game");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new GridLayout(8, 8));
@@ -42,7 +45,11 @@ public class ChessGameGUI extends JFrame {
                 square.addMouseListener(new MouseAdapter() {
                     @Override
                     public void mouseClicked(MouseEvent e) {
-                        handleSquareClick(finalRow, finalCol);
+                        try {
+                            handleSquareClick(finalRow, finalCol);
+                        } catch (IOException ex) {
+                            throw new RuntimeException(ex);
+                        }
                     }
                 });
                 add(square);
@@ -69,7 +76,7 @@ public class ChessGameGUI extends JFrame {
         }
     }
 
-    private void handleSquareClick(int row, int col) {
+    private void handleSquareClick(int row, int col) throws IOException {
         boolean moveResult = game.handleSquareSelection(row, col);
         clearHighlights();
         if (moveResult) {
@@ -83,7 +90,8 @@ public class ChessGameGUI extends JFrame {
     }
 
     private void checkGameState() {
-        PieceColor currentPlayer = game.getCurrentPlayerColor();
+//        PieceColor currentPlayer = game.getCurrentPlayerColor();
+        PieceColor currentPlayer = game.getPlayerColor();
         boolean inCheck = game.isInCheck(currentPlayer);
 
         if (inCheck) {
@@ -122,7 +130,7 @@ public class ChessGameGUI extends JFrame {
     }
 
     private void checkGameOver() {
-        if (game.isCheckmate(game.getCurrentPlayerColor())) {
+        if (game.isCheckmate(game.getPlayerColor())) {
             int response = JOptionPane.showConfirmDialog(this, "Checkmate! Would you like to play again?", "Game Over",
                     JOptionPane.YES_NO_OPTION);
             if (response == JOptionPane.YES_OPTION) {
@@ -133,7 +141,11 @@ public class ChessGameGUI extends JFrame {
         }
     }
 
+    public void makeMove(Move move, boolean isYourTurn) throws IOException {
+        game.makeMove(move, isYourTurn);
+    }
+
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(ChessGameGUI::new);
+//        SwingUtilities.invokeLater(ChessGameGUI::new);
     }
 }
